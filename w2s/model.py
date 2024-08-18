@@ -115,11 +115,26 @@ def init_model_and_tokenizer(cfg: ModelConfig):
 # TODO: make a legitimate model registry
 # for now we just have a map from model name to learning rate and lora modules
 MODEL_REGISTRY = {
-    "meta-llama/Meta-Llama-3-8B": {
+    # Strong models
+    "meta-llama/Meta-Llama-3.1-8B": {
         "lr": 8e-5,
         "lora_modules": DEFAULT_LORA_MODULES,
     },
-    "mistralai/Mistral-7B-v0.1": {
+    "mistralai/Mistral-7B-v0.3": {
+        "lr": 8e-5,
+        "lora_modules": DEFAULT_LORA_MODULES,
+    },
+    "microsoft/Phi-3-mini-128k-instruct": {
+        "lr": 8e-5,
+        "lora_modules": DEFAULT_LORA_MODULES,
+    },
+    
+    "microsoft/Phi-3-small-128k-instruct": {
+        "lr": 8e-5,
+        "lora_modules": DEFAULT_LORA_MODULES,
+    },
+    
+    "microsoft/Phi-3-medium-128k-instruct": {
         "lr": 8e-5,
         "lora_modules": DEFAULT_LORA_MODULES,
     },
@@ -127,8 +142,25 @@ MODEL_REGISTRY = {
         "lr": 8e-5,
         "lora_modules": DEFAULT_LORA_MODULES,
     },
+    "gemma/gemma-7b": {
+        "lr": 8e-5,
+        "lora_modules": DEFAULT_LORA_MODULES,
+    },
+    
+    
+    
+    
+    # Weak models
+    "TRI-ML/DCLM-1B-v0": {
+        "lr": 5e-4,
+        "lora_modules": DEFAULT_LORA_MODULES,
+    },
     "Qwen/Qwen1.5-0.5B": {
         "lr": 5e-4,
         "lora_modules": DEFAULT_LORA_MODULES,
     },
+    "openai-community/gpt2": {
+        "lr": 5e-4,
+        "lora_modules": None,
+    }
 }
