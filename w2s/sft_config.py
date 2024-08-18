@@ -12,7 +12,7 @@ from w2s.sft_utils import literal
 class SFTConfig(Serializable):
     # name of the model to train
     weak_model_name: str = "Qwen/Qwen1.5-0.5B"
-    strong_model_name: str = "meta-llama/Meta-Llama-3-8B"
+    strong_model_name: str = "meta-llama/Meta-Llama-3.1-8B"
     # name of the dataset to use
     dataset: str = "boolq"
     n_epochs: float = 3
@@ -35,11 +35,14 @@ class SFTConfig(Serializable):
     eval_every: int = 25  # steps
     save_every: int = 25  # steps
     save_total_limit: Optional[int] = 1
+    seed: Optional[int] = 42
     weight_decay: float = 0.1
     weak_lr: float = 5e-4
     strong_lr: float = 8e-5
     load_best_model_at_end: bool = True
     metric_for_best_model: str = "val_auroc"
+    weak_only: bool = False
+    strong_only: bool = False
 
     loss: LossConfig = subgroups(LOSS_CONFIGS, default="logconf")
     probe: ProbeConfig = subgroups(PROBE_CONFIGS, default="knn")
