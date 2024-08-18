@@ -21,7 +21,7 @@ def run_train(cfg: SFTConfig):
         cfg.dataset, cfg.n_train, cfg.n_val, cfg.n_test, cfg.n_predict
     )
 
-    train_halves = splits["train"].train_test_split(test_size=0.5, seed=cfg.seed)
+    train_halves = splits["train"].train_test_split(test_size=0.7, seed=cfg.seed)
     splits["weak_train"] = train_halves["train"]
     splits["strong_train"] = train_halves["test"]
 
