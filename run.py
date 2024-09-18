@@ -39,6 +39,12 @@ def run_train(cfg: SFTConfig):
     root = Path(cfg.results_folder) / cfg.run_name
     shared_root = Path(cfg.results_folder) / cfg.shared_folder
     cfg_name = f"{cfg.dataset}_{cfg.seed}_{cfg.weak_model_name.split('/')[-1]}_{cfg.strong_model_name.split('/')[-1]}"
+    
+    # Save splits first
+    save_path = shared_root / cfg_name / "splits"
+    save_path.mkdir(parents=True, exist_ok=True)
+    splits.save_to_disk(str(save_path))
+
     train_args: dict = dict(
         num_train_epochs=cfg.n_epochs,
         adam_beta2=0.95,
