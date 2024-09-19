@@ -21,29 +21,46 @@ def run_train(cfg: SFTConfig):
         cfg.dataset, cfg.n_train, cfg.n_val, cfg.n_test, cfg.n_predict
     )
 
-    train_halves = splits["train"].train_test_split(test_size=0.7, seed=cfg.seed)
+    train_halves = splits["train"].train_test_split(test_size=0.5, seed=cfg.seed)
     splits["weak_train"] = train_halves["train"]
     splits["strong_train"] = train_halves["test"]
 
     cols = ["hard_label", "txt"]
-    splits = splits.select_columns(cols).rename_column("hard_label", "labels")
-    for split in splits:
-        splits[split] = splits[split].add_column("gt_labels", splits[split]["labels"])
-
-    print(
-        f"Example:\n\n{splits['strong_train'][0]['txt']}\n\nLabel: {splits['strong_train'][0]['labels']}"
-    )
-    
-    
     
     root = Path(cfg.results_folder) / cfg.run_name
     shared_root = Path(cfg.results_folder) / cfg.shared_folder
     cfg_name = f"{cfg.dataset}_{cfg.seed}_{cfg.weak_model_name.split('/')[-1]}_{cfg.strong_model_name.split('/')[-1]}"
     
     # Save splits first
+    # Save splits first
     save_path = shared_root / cfg_name / "splits"
-    save_path.mkdir(parents=True, exist_ok=True)
-    splits.save_to_disk(str(save_path))
+    if os.path.exists(save_path):
+        print(f"Loading splits from {save_path}")
+        splits = load_from_disk(str(save_path)) 
+    else:
+        print(f"Loading and processing dataset {cfg.dataset}")
+        splits = load_and_process_dataset(
+            cfg.dataset, cfg.n_train, cfg.n_val, cfg.n_test, cfg.n_predict
+        )
+
+        train_halves = splits["train"].train_test_split(test_size=0.5, seed=cfg.seed)
+        splits["weak_train"] = train_halves["train"]
+        splits["strong_train"] = train_halves["test"]
+
+        cols = ["hard_label", "txt"]
+        splits = splits.select_columns(cols).rename_column("hard_label", "labels")
+        for split in splits:
+            splits[split] = splits[split].add_column("gt_labels", splits[split]["labels"])
+
+        print(
+            f"Example:\n\n{splits['strong_train'][0]['txt']}\n\nLabel: {splits['strong_train'][0]['labels']}"
+        )
+
+
+        print(f"Saving splits to {save_path}")
+        save_path.mkdir(parents=True, exist_ok=True)
+        splits.save_to_disk(str(save_path))
+
 
     train_args: dict = dict(
         num_train_epochs=cfg.n_epochs,
