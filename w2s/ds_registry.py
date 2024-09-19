@@ -732,7 +732,27 @@ def format_underspecified_amazon_polarity(ex, rng, use_gt=True):
 # )
 
 
-VALID_DATASETS: list[str] = list(_REGISTRY.keys())
+# VALID_DATASETS: list[str] = list(_REGISTRY.keys())
+
+VALID_DATASETS = ['anli-r2',
+ 'cola',
+ 'dream',
+ 'mc_taco',
+ 'hellaswag',
+ 'multirc',
+ 'paws',
+ 'piqa',
+ 'quail',
+ 'quartz',
+ 'social_i_qa',
+ 'sst2',
+ 'wic',
+ 'twitter-sentiment',
+ 'sciq',
+ 'anthropic_hh',
+ 'cosmos_qa',
+ 'boolq',
+ 'amazon_polarity']
 
 
 """
