@@ -188,7 +188,7 @@ def hf_loader(*hf_name, split_names=None, n_test=None):
         nonlocal split_names
         if n_test is not None:
             assert split_names is None
-            ds = hf_load_dataset(*hf_name)
+            ds = hf_load_dataset(*hf_name, trust_remote_code=True)
             if isinstance(ds, HfDatasetDict):
                 ds = concatenate_datasets(ds.values())  # type: ignore
             assert isinstance(ds, HfDataset)
@@ -200,7 +200,7 @@ def hf_loader(*hf_name, split_names=None, n_test=None):
         if split_names is None:
             split_names = dict()
 
-        return hf_load_dataset(*hf_name, split=split_names.get(split, split))
+        return hf_load_dataset(*hf_name, split=split_names.get(split, split), trust_remote_code=True)
 
     return thunk
 
