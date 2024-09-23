@@ -12,6 +12,7 @@ from transformers import (
 )
 
 import wandb
+import gc
 from w2s.loss import (
     log_confidence_loss, 
     confidence_window_loss, 
@@ -31,7 +32,24 @@ from w2s.sft_utils import (
 )
 from w2s.loss import LossConfig
 from w2s.probe import PROBES
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from typing import Tuple
+from w2s.model import init_model_from_pretrained
 
+
+def compute_metrics_torch(predictions, labels):
+        hard_labels = (labels > 0.5).long()
+        return dict(
+            accuracy=predictions.argmax(dim=1).eq(hard_labels).float().mean(),
+            auroc=roc_auc(hard_labels, predictions[:, 1]),
+        )
+
+def detorch_metrics(metrics):
+    return {k: v.detach().cpu().item() for k, v in metrics.items()}
+
+def compute_metrics(eval_pred):
+    predictions, labels = map(torch.from_numpy, eval_pred)
+    return compute_metrics_torch(predictions, labels)
 
 class CustomLossTrainer(Trainer):
     def __init__(
@@ -129,6 +147,7 @@ def train(
         and evaluates on ds_dict["test"].
     It also optionally predicts on ds_dict["predict"] and saves the predictions.
     """
+
     save_dir = Path(train_args.output_dir)
     results_path = save_dir / "results.json"
 
@@ -145,20 +164,6 @@ def train(
         return out
 
     ds_dict = ds_dict.map(process, batched=True)
-
-    def compute_metrics_torch(predictions, labels):
-        hard_labels = (labels > 0.5).long()
-        return dict(
-            accuracy=predictions.argmax(dim=1).eq(hard_labels).float().mean(),
-            auroc=roc_auc(hard_labels, predictions[:, 1]),
-        )
-
-    def detorch_metrics(metrics):
-        return {k: v.detach().cpu().item() for k, v in metrics.items()}
-
-    def compute_metrics(eval_pred):
-        predictions, labels = map(torch.from_numpy, eval_pred)
-        return compute_metrics_torch(predictions, labels)
 
     probe_required = transfer and (cfg['probe_relabel'] or cfg['probe_filter'])
 
@@ -280,7 +285,7 @@ def train(
         cfg["loss"] = cfg["loss"].to_dict()
         cfg["probe"] = cfg["probe"].to_dict()
         json.dump(cfg, f, indent=2)
-    wandb.config.update(cfg)
+    # wandb.config.update(cfg)
 
     # save predictions
     if predict_dict is not None:
@@ -294,3 +299,284 @@ def train(
             pred_ds.save_to_disk(str(save_dir / "predictions" / name))
 
     wandb.finish()
+    return trainer, eval_results
+
+def load_model_and_predict(
+    cfg: dict,
+    model_cfg: ModelConfig,
+    train_args: TrainingArguments,
+    ds_dict: DatasetDict,
+    predict_dict: Union[DatasetDict, dict] = None
+) -> Tuple[torch.nn.Module, Optional[dict]]:
+    """
+    Load model from model_cfg and train_args, and save predictions if predict_dict is provided.
+
+    Args:
+        model_cfg: ModelConfig with the model name and whether to enable LoRA
+        train_args: TrainingArguments with the training hyperparameters
+        ds_dict: DatasetDict with splits for train, val, test
+        predict_dict: Optional dictionary or DatasetDict containing datasets to predict on
+
+    Returns:
+        Tuple containing:
+        - The loaded model
+        - A dictionary of predictions (if predict_dict was provided, else None)
+    """
+    print(f"{get_gpu_mem_used() * 100:.2f}% of all GPU memory in use before model init")
+    tokenizer = init_tokenizer(model_cfg)
+    def process(examples):
+        out = tokenizer(examples["txt"], truncation=True)
+        return out
+
+    # Load the saved model
+    save_dir = Path(train_args.output_dir)
+    # save_dir = Path(train_args["output_dir"])
+    best_model_path = save_dir / "best-ckpt"
+
+    if best_model_path.exists():
+        print(f"Loading best model from {best_model_path}")
+        model = init_model_from_pretrained(model_cfg, tokenizer, best_model_path)
+        print(f"{get_gpu_mem_used() * 100:.2f}% of all GPU memory in use after model init")
+    else:
+        print(f"Best model not found at {best_model_path}. Using the initialized model.")
+        return None, None
+    
+    print(f"{get_gpu_mem_used() * 100:.2f}% of all GPU memory in use after loading model")
+
+    trainer = CustomLossTrainer(
+        loss_name=cfg["loss_name"],
+        loss_cfg=cfg["loss"],
+        buffer_size=cfg["batch_size"],
+        transfer=False,
+        args=train_args,
+        compute_metrics=compute_metrics,
+        data_collator=DataCollatorWithPadding(tokenizer),
+        eval_dataset={k: ds_dict[k] for k in ["val", "test"]},
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=ds_dict["train"],
+    )
+
+    predictions = None
+    if predict_dict is not None:
+        predictions = {}
+        for name, predict_ds in predict_dict.items():
+            predict_ds = predict_ds.map(process, batched=True)
+            pred_logits = torch.from_numpy(trainer.predict(predict_ds).predictions)
+            preds = pred_logits.softmax(-1)[:, 1].cpu().float().numpy()
+            pred_ds = predict_ds.add_column("soft_pred", preds)
+            if not os.path.exists(save_dir / "predictions" / name):
+                os.makedirs(save_dir / "predictions" / name)
+            pred_ds.save_to_disk(str(save_dir / "predictions" / name))
+        # Save predictions
+        save_dir = Path(train_args.output_dir)
+        for name, preds in predictions.items():
+            pred_ds = predict_dict[name].add_column("soft_pred", preds)
+            if not os.path.exists(save_dir / "predictions" / name):
+                os.makedirs(save_dir / "predictions" / name)
+            pred_ds.save_to_disk(str(save_dir / "predictions" / name))
+
+    return model, predictions
+
+
+def linear_probe_train(
+    ds_dict: DatasetDict,
+    model_cfg: ModelConfig,
+    train_args: TrainingArguments,
+    cfg: dict,
+    transfer: bool,
+    predict_dict: Union[DatasetDict, dict, None] = None,
+    save_activations: bool = False,
+    use_probe: bool = False,
+    acts_dir: Optional[Path] = None,
+):
+    """
+    ds_dict: DatasetDict with splits for train, val, test, and (optionally) predict,
+        with columns "txt" and "labels"
+    model_cfg: ModelConfig with the model name and whether to enable LoRA
+    train_args: TrainingArguments with the training hyperparameters
+    cfg: a dictionary containing all the relevant details for reproducibility.
+        This will be updated with your train_args and model_cfg before saving.
+    logconf_weight: the weight for the log confidence loss
+    logconf_warmup_steps: the number of steps to linearly increase the logconf_weight
+    balance_batch: whether to balance the batch with the log confidence loss
+
+    This function trains a model on ds_dict["train"], uses ds_dict["val"] for early stopping,
+        and evaluates on ds_dict["test"].
+    It also optionally predicts on ds_dict["predict"] and saves the predictions.
+    """
+
+        
+    save_dir = Path(train_args.output_dir)
+    results_path = save_dir / "results.json"
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    clear_mem()
+
+    print(f"{get_gpu_mem_used() * 100:.2f}% of all GPU memory in use before toker init")
+    tokenizer = init_tokenizer(model_cfg)
+    model = None
+
+    def process(examples):
+        out = tokenizer(examples["txt"], truncation=True)
+        return out
+
+    ds_dict = ds_dict.map(process, batched=True)
+
+    probe_required = transfer and (cfg['probe_relabel'] or cfg['probe_filter'])
+
+    if save_activations:
+        if acts_dir.exists() and all((acts_dir / f"{name}.pt").exists() for name in ds_dict.keys()):
+            print("Activations already exist at", acts_dir)
+        else:
+            print("Saving activations to", acts_dir)
+            if model is None:
+                print(f"{get_gpu_mem_used() * 100:.2f}% of all GPU memory in use before training")
+                model = init_model(tokenizer, model_cfg)
+                print(f"{get_gpu_mem_used() * 100:.2f}% of all GPU memory in use after model init")
+            acts_dir.mkdir(parents=True, exist_ok=True)
+            for name, ds in ds_dict.items():
+                acts = gather_hiddens(model, ds)
+                torch.save(acts, acts_dir / f"{name}.pt")
+
+    if results_path.exists():
+        print(
+            f"Results already exist at {results_path}. Skipping training and evaluation."
+        )
+        return None, None
+    
+    print(f"No results found at {results_path}. Training model.")
+
+    if model is None:
+        print(f"{get_gpu_mem_used() * 100:.2f}% of all GPU memory in use before training")
+        model = init_model(tokenizer, model_cfg)
+        print(f"{get_gpu_mem_used() * 100:.2f}% of all GPU memory in use after model init")
+
+    # Freeze all layers except the classification head
+    for param in model.base_model.parameters():
+        param.requires_grad = False
+
+
+    if transfer and cfg["loss_name"] == "window" and cfg["loss"].radius == "midweak":
+        confs = torch.abs(torch.tensor(ds_dict["train"]["labels"]) - 0.5)
+        cfg["loss"].radius = confs.median().item()
+        print(f"Setting radius to {cfg['loss'].radius:.2f} based on median confidence in train set")
+
+    trainer = CustomLossTrainer(
+        loss_name=cfg["loss_name"],
+        loss_cfg=cfg["loss"],
+        buffer_size=cfg["batch_size"],
+        transfer=transfer,
+        args=train_args,
+        compute_metrics=compute_metrics,
+        data_collator=DataCollatorWithPadding(tokenizer),
+        eval_dataset={k: ds_dict[k] for k in ["val", "test"]},
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=ds_dict["train"],
+    )
+
+    # spotcheck for untrained params
+    # spots = spotcheck_init(model)
+
+    # train
+    trainer.train()
+
+    # spotcheck
+    # spotcheck(model, spots)
+
+    # evaluate on test dataset
+    eval_results = trainer.evaluate(ds_dict["test"])  # type: ignore
+    move_best_ckpt(trainer)
+
+    # save results
+    with open(results_path, "w") as f:
+        json.dump(eval_results, f, indent=2)
+
+    # save config
+    with open(save_dir / "config.json", "w") as f:
+        cfg["model"] = model_cfg.to_dict()
+        cfg["train_args"] = train_args.to_dict()
+        cfg["transfer"] = transfer
+        cfg["loss"] = cfg["loss"].to_dict()
+        cfg["probe"] = cfg["probe"].to_dict()
+        json.dump(cfg, f, indent=2)
+    wandb.config.update(cfg)
+
+    # save predictions
+    if not os.path.exists(save_dir / "predictions"):
+        os.makedirs(save_dir / "predictions")
+    if predict_dict is not None:
+        for name, predict_ds in predict_dict.items():
+            predict_ds = predict_ds.map(process, batched=True)
+            print("Gathering predictions for", name)
+            pred_logits = torch.from_numpy(trainer.predict(predict_ds).predictions)
+            preds = pred_logits.softmax(-1)[:, 1].cpu().float().numpy()
+            pred_ds = predict_ds.add_column("soft_pred", preds)
+            if not os.path.exists(save_dir / "predictions" / name):
+                os.makedirs(save_dir / "predictions" / name)
+            pred_ds.save_to_disk(str(save_dir / "predictions" / name))
+
+    wandb.finish()
+
+    return trainer, eval_results
+
+
+
+def load_model_and_save_activations(
+    ds_dict: DatasetDict,
+    model_cfg: ModelConfig,
+    train_args: TrainingArguments,
+    acts_dir: Optional[Path] = None,
+):
+    """
+    ds_dict: DatasetDict with splits for train, val, test, and (optionally) predict,
+        with columns "txt" and "labels"
+    model_cfg: ModelConfig with the model name and whether to enable LoRA
+    train_args: TrainingArguments with the training hyperparameters
+    cfg: a dictionary containing all the relevant details for reproducibility.
+        This will be updated with your train_args and model_cfg before saving.
+    logconf_weight: the weight for the log confidence loss
+    logconf_warmup_steps: the number of steps to linearly increase the logconf_weight
+    balance_batch: whether to balance the batch with the log confidence loss
+
+    This function trains a model on ds_dict["train"], uses ds_dict["val"] for early stopping,
+        and evaluates on ds_dict["test"].
+    It also optionally predicts on ds_dict["predict"] and saves the predictions.
+    """
+    save_dir = Path(train_args.output_dir)
+    results_path = save_dir / "results.json"
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    clear_mem()
+
+    print(f"{get_gpu_mem_used() * 100:.2f}% of all GPU memory in use before toker init")
+    tokenizer = init_tokenizer(model_cfg)
+    model = None
+
+    def process(examples):
+        out = tokenizer(examples["txt"], truncation=True)
+        return out
+
+    ds_dict = ds_dict.map(process, batched=True)
+
+
+    if acts_dir.exists() and all((acts_dir / f"{name}.pt").exists() for name in ds_dict.keys()):
+        print("Activations already exist at", acts_dir)
+    else:
+        print("Saving activations to", acts_dir)
+        if model is None:
+            print(f"{get_gpu_mem_used() * 100:.2f}% of all GPU memory in use before training")
+            model = init_model(tokenizer, model_cfg)
+            print(f"{get_gpu_mem_used() * 100:.2f}% of all GPU memory in use after model init")
+        acts_dir.mkdir(parents=True, exist_ok=True)
+        for name, ds in ds_dict.items():
+            acts = gather_hiddens(model, ds)
+            torch.save(acts, acts_dir / f"{name}.pt")
+            print(f"Saved activations for {name} to {acts_dir / f'{name}.pt'}")
+        
+        del model
+        torch.cuda.empty_cache()
+        gc.collect()
