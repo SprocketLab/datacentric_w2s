@@ -68,7 +68,7 @@ else:
     K = len(overlap_sampling_ratio_list)
     hard_sampling_ratio_list = [1/K for _ in range(K)]
     easy_sampling_ratio_list = [1/K for _ in range(K)]
-    T = 50
+    T = 20
 
     cfg = SFTConfig(
         dataset=dataset_name,
