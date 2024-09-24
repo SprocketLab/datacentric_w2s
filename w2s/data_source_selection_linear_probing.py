@@ -83,7 +83,9 @@ class StrategyTracker(object):
         self.X = []
         self.y = []
         self.y_pseudo = []
+        
         self.X_detected_hard = [] # keep to help overlap detection
+        self.X_detected_nonhard = [] # keep to help overlap detection
         self.X_detected_overlap_only = []
         self.y_detected_overlap_only = []
         self.y_pseudo_detected_overlap_only = []
@@ -99,7 +101,8 @@ class StrategyTracker(object):
         y_detected_overlap_only = partition_dict["y_overlap"]
         y_pseudo_detected_overlap_only = partition_dict["y_pseudo_overlap"]
         X_detected_hard = partition_dict["X_hard"]
-        
+        X_detected_nonhard = partition_dict["X_nonhard"]
+
         self.X.append(X)
         self.y.append(y)
         self.y_pseudo.append(y_pseudo)
@@ -107,6 +110,7 @@ class StrategyTracker(object):
         self.y_detected_overlap_only.append(y_detected_overlap_only)
         self.y_pseudo_detected_overlap_only.append(y_pseudo_detected_overlap_only)
         self.X_detected_hard.append(X_detected_hard)
+        self.X_detected_nonhard.append(X_detected_nonhard)
 
     def train_and_eval(self):
         
@@ -177,22 +181,30 @@ class StrategyTracker(object):
     def get_gt_overlap_ratio(self):
         return np.concatenate(self.X_gt_overlap_only).shape[0] / np.concatenate(self.X).shape[0]
 
-def detect_overlap_easy(X_nonhard, X_hard, nonhard_indices):
+def detect_overlap_easy(X_nonhard, X_hard, X_nonhard_augmented, nonhard_indices):
     if isinstance(X_nonhard, torch.Tensor):
         X_nonhard = X_nonhard.detach().cpu().numpy()
     if isinstance(X_hard, torch.Tensor):
         X_hard = X_hard.detach().cpu().numpy()
+    if isinstance(X_nonhard_augmented, torch.Tensor):
+        X_nonhard_augmented = X_nonhard_augmented.detach().cpu().numpy()
     overlap_scores = (X_nonhard @ X_hard.T).max(axis=1)
+    overlap_scores_augmented = (X_nonhard_augmented @ X_hard.T).max(axis=1)
     
     # Apply change point detection to decide threshold for align scores
-    sorted_overlap_scores = np.sort(overlap_scores)
 
     # Perform change point detection
-    model = Binseg(model="l2").fit(sorted_overlap_scores.reshape(-1, 1))
-    change_points = model.predict(n_bkps=1)[0]
+    try:
+        sorted_overlap_scores_augmented = np.sort(overlap_scores_augmented)
+        model = Binseg(model="l2").fit(sorted_overlap_scores_augmented.reshape(-1, 1))
+        change_points = model.predict(n_bkps=1)[0]
+        overlap_score_threshold = sorted_overlap_scores_augmented[change_points]
+    except Exception as e:
+        print(e)
+        print("Change point detection failed. Using quantile 0.5 as threshold in overlap scores.")
+        overlap_score_threshold = np.quantile(overlap_scores_augmented, 0.5)
 
     # Use the detected change point as the threshold
-    overlap_score_threshold = sorted_overlap_scores[change_points]
     detected_overlap_indices = np.where(overlap_scores >= overlap_score_threshold)[0]
     detected_easy_indices = np.where(overlap_scores < overlap_score_threshold)[0]
 
@@ -212,11 +224,17 @@ def detect_hard_nonhard(X, y_pseudo_proba):
     sorted_confidence = np.sort(confidence_scores)
     
     # Perform change point detection
-    model = Binseg(model="l2").fit(sorted_confidence.reshape(-1, 1))
-    change_points = model.predict(n_bkps=1)[0]
+    try:
+        model = Binseg(model="l2").fit(sorted_confidence.reshape(-1, 1))
+        change_points = model.predict(n_bkps=1)[0]
     
-    # Use the detected change point as the threshold
-    confidence_score_threshold = sorted_confidence[change_points]
+        # Use the detected change point as the threshold
+        confidence_score_threshold = sorted_confidence[change_points]
+    except Exception as e:
+        print(e)
+        print("Change point detection failed. Using median as threshold in confidence scores.")
+        confidence_score_threshold = np.quantile(confidence_scores, 0.5)
+
 
     detected_hard_indices = np.where(confidence_scores < confidence_score_threshold)[0]
     detected_nonhard_indices = np.where(confidence_scores >= confidence_score_threshold)[0]
@@ -228,6 +246,7 @@ def detect_easy_hard_overlap(X, y_pseudo_proba, tracker):
     detected_hard_indices, detected_nonhard_indices = detect_hard_nonhard(X, y_pseudo_proba)
     X_hard, X_nonhard = X[detected_hard_indices], X[detected_nonhard_indices]
     X_hard = torch.tensor(X_hard, device="cuda")
+    X_nonhard = torch.tensor(X_nonhard, device="cuda")
 
     if len(tracker.X_detected_hard) > 0:
         X_detected_hard_history = tracker.X_detected_hard
@@ -239,23 +258,48 @@ def detect_easy_hard_overlap(X, y_pseudo_proba, tracker):
         X_hard_augmented = torch.concat([X_hard, X_detected_hard_history], axis=0)
     else:
         X_hard_augmented = X_hard
-    detected_easy_indices, detected_overlap_indices = detect_overlap_easy(X_nonhard, X_hard_augmented, detected_nonhard_indices)
-    return detected_easy_indices, detected_hard_indices, detected_overlap_indices
+
+    if len(tracker.X_detected_nonhard) > 0:
+        X_detected_nonhard_history = tracker.X_detected_nonhard
+        if isinstance(X_detected_nonhard_history[0], torch.Tensor):
+            X_detected_nonhard_history = torch.concat(X_detected_nonhard_history, axis=0)
+        else:
+            X_detected_nonhard_history = np.concatenate(tracker.X_detected_nonhard, axis=0)
+            X_detected_nonhard_history = torch.tensor(X_detected_nonhard_history, device="cuda")
+        X_nonhard_augmented = torch.concat([X_nonhard, X_detected_nonhard_history], axis=0)
+    else:
+        X_nonhard_augmented = X_nonhard
+    detected_easy_indices, detected_overlap_indices = detect_overlap_easy(X_nonhard, X_hard_augmented, X_nonhard_augmented, detected_nonhard_indices)
+
+    return_dict = {
+        'detected_easy_indices': detected_easy_indices,
+        'detected_hard_indices': detected_hard_indices,
+        'detected_nonhard_indices': detected_nonhard_indices,
+        'detected_overlap_indices': detected_overlap_indices,
+    }
+    return return_dict
 
 def detect_and_partition(X, y, y_pseudo, tracker):
-    detected_easy_indices, detected_hard_indices, detected_overlap_indices = detect_easy_hard_overlap(X, y_pseudo, tracker)
-    
+    detected_indices = detect_easy_hard_overlap(X, y_pseudo, tracker)
+    detected_easy_indices = detected_indices['detected_easy_indices']
+    detected_hard_indices = detected_indices['detected_hard_indices']
+    detected_nonhard_indices = detected_indices['detected_nonhard_indices']
+    detected_overlap_indices = detected_indices['detected_overlap_indices']
+
     X_easy = X[detected_easy_indices]
     X_hard = X[detected_hard_indices]
+    X_nonhard = X[detected_nonhard_indices]
     X_overlap = X[detected_overlap_indices]
+    
 
     y_easy = y[detected_easy_indices]
     y_hard = y[detected_hard_indices]
     y_overlap = y[detected_overlap_indices]
-
+    y_nonhard = y[detected_nonhard_indices]
     y_pseudo_easy = y_pseudo[detected_easy_indices]
     y_pseudo_hard = y_pseudo[detected_hard_indices]
     y_pseudo_overlap = y_pseudo[detected_overlap_indices]
+    y_pseudo_nonhard = y_pseudo[detected_nonhard_indices]
 
     return_dict = {
         "X": X,
@@ -264,14 +308,17 @@ def detect_and_partition(X, y, y_pseudo, tracker):
         "X_easy": X_easy,
         "X_hard": X_hard,
         "X_overlap": X_overlap,
+        "X_nonhard": X_nonhard,
         "y_pseudo_easy": y_pseudo_easy,
         "y_pseudo_hard": y_pseudo_hard,
         "y_pseudo_overlap": y_pseudo_overlap,
+        "y_pseudo_nonhard": y_pseudo_nonhard,
         "y_hard": y_hard,
         "y_easy": y_easy,
         "y_overlap": y_overlap,
         "detected_easy_indices": detected_easy_indices,
         "detected_hard_indices": detected_hard_indices,
         "detected_overlap_indices": detected_overlap_indices,
+        "detected_nonhard_indices": detected_nonhard_indices,
     }
     return return_dict
