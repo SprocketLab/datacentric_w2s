@@ -36,6 +36,16 @@ def partition_indices_with_ratio(indices, ratio_list, seed):
         indices = indices[n_sample:]
     return partition
 
+def partition_indices_with_count(indices, count_list, seed):
+    np.random.seed(seed)
+    np.random.shuffle(indices)
+    partition = []
+    for n_sample in count_list:
+        partition.append(indices[:n_sample])
+        indices = indices[n_sample:]
+    return partition
+
+
 
 class Arm(object):
     def __init__(self, X, X_weak, y, overlap_density, num_samples_per_round, T, seed, easy_ratio=0.5, hard_ratio=0.5):
