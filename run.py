@@ -16,15 +16,6 @@ from w2s.utils import get_config_foldername
 
 
 def run_train(cfg: SFTConfig):
-    print(f"Loading and processing dataset {cfg.dataset}")
-    splits = load_and_process_dataset(
-        cfg.dataset, cfg.n_train, cfg.n_val, cfg.n_test, cfg.n_predict
-    )
-
-    train_halves = splits["train"].train_test_split(test_size=0.5, seed=cfg.seed)
-    splits["weak_train"] = train_halves["train"]
-    splits["strong_train"] = train_halves["test"]
-
     cols = ["hard_label", "txt"]
     
     root = Path(cfg.results_folder) / cfg.run_name

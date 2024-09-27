@@ -50,7 +50,7 @@ def gather_hiddens(model: torch.nn.Module, dataset: Dataset):
     D = assert_type(int, cfg.hidden_size)
     L = assert_type(int, cfg.num_hidden_layers + 1)
 
-    buffer = torch.empty(len(dataset), L, D, device=model.device, dtype=model.dtype)
+    buffer = torch.empty(len(dataset), D, device=model.device, dtype=model.dtype)
     print(f"Allocated buffer of shape {buffer.shape}")
     for i, ex in enumerate(tqdm(dataset)):
         ex = assert_type(dict, ex)
@@ -59,7 +59,7 @@ def gather_hiddens(model: torch.nn.Module, dataset: Dataset):
         act = torch.stack(out.hidden_states)[:, 0, -1] # Final token
         if act.shape != (L, D):
             raise ValueError(f"Unexpected shape {act.shape} for hidden states on example {i}")
-        buffer[i] = act
+        buffer[i] = act[-1, :]
 
     return buffer
 

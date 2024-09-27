@@ -104,6 +104,48 @@ def init_model(tokenizer, cfg: ModelConfig):
 
     return model
 
+def init_model_from_pretrained(cfg: ModelConfig, tokenizer: AutoTokenizer, model_path: str):
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_path, torch_dtype="auto", device_map={"": "cuda"},
+        # force_download=True,
+    )
+
+    if cfg.lora_modules is None and cfg.enable_lora:
+        cfg.lora_modules = MODEL_REGISTRY.get(cfg.name, {}).get(
+            "lora_modules", DEFAULT_LORA_MODULES
+        )
+
+    model.config.pad_token_id = tokenizer.pad_token_id  # type: ignore
+    model.score.weight.data *= 0.01
+    model.config.problem_type = "single_label_classification"
+
+    if cfg.enable_lora:
+        lora_cfg = LoraConfig(
+            target_modules=cfg.lora_modules, task_type=TaskType.SEQ_CLS
+        )
+
+        # NOTE: adding task_type causes dtype errors, but is necessary for proper module saving
+        # and for making the lm head trainable, so we need to wrap it in an AutoCastingScore
+        for attr in ["score", "classifier"]:
+            if hasattr(model, attr):
+                setattr(
+                    model,
+                    attr,
+                    AutoCastingScore(getattr(model, attr), output_dtype=model.dtype),
+                )
+                break
+        else:
+            raise ValueError("Could not find classifier head in model.")
+        model = get_peft_model(model, lora_cfg)
+
+    # put all the trainable (e.g. LoRA) parameters in float32
+    for p in model.parameters():
+        if p.requires_grad:
+            p.data = p.data.float()
+
+    return model
+
+
 
 def init_model_and_tokenizer(cfg: ModelConfig):
     tokenizer = init_tokenizer(cfg)
