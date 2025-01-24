@@ -15,7 +15,9 @@ If you run into problems, try installing inside a conda or venv environment.
 ## Running experiments
 
 * Overlap detection experiments
+  
 Step 1. [Cache activations](https://github.com/SprocketLab/datacentric_w2s/blob/main/scripts/llm_probing_overlap_detection/overlap_activation_save.py)
+
 Step 2. [Run overlap detection experiments](https://github.com/SprocketLab/datacentric_w2s/blob/main/scripts/llm_probing_overlap_detection/overlap_probing_experiment.py)
 
 * [Data source selection experiments](https://github.com/SprocketLab/datacentric_w2s/blob/main/scripts/llm_probing_data_selection/data_selection_with_linear_probing.py)
