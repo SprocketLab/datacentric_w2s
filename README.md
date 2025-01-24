@@ -4,8 +4,8 @@
 
 Internation Conference on Learning Representations (ICLR) 2025.
 
-Source code for experiments, based on [EleutherAI/w2s](https://github.com/EleutherAI/w2s).
-
+Paper Link: [https://arxiv.org/abs/2404.08461
+](https://arxiv.org/abs/2412.03881)
 ## Installation
 
 `pip install -e .`
@@ -31,3 +31,4 @@ Step 2. [Run overlap detection experiments](https://github.com/SprocketLab/datac
   year={2024}
 }
 ```
+Acknowledgement: This source code is built upon [EleutherAI's W2S repository](https://github.com/EleutherAI/w2s).
